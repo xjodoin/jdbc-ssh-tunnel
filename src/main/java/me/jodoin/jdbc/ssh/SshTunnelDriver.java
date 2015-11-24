@@ -2,6 +2,8 @@ package me.jodoin.jdbc.ssh;
 
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.sql.Connection;
 import java.sql.Driver;
 import java.sql.DriverManager;
@@ -9,8 +11,13 @@ import java.sql.DriverPropertyInfo;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.util.Properties;
+import java.util.concurrent.ExecutionException;
 import java.util.logging.Logger;
 
+import com.google.common.base.Throwables;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
@@ -18,8 +25,17 @@ import com.jcraft.jsch.Session;
 public class SshTunnelDriver implements Driver {
 
 	/**
-	 * Root for the JDBC URL that the Phoenix accepts accepts.
+	 * Key used to retreive the hostname value from the properties instance
+	 * passed to the driver.
 	 */
+	public static final String HOST_PROPERTY_KEY = "HOST";
+
+	/**
+	 * Key used to retreive the port number value from the properties instance
+	 * passed to the driver.
+	 */
+	public static final String PORT_PROPERTY_KEY = "PORT";
+
 	public final static String JDBC_PROTOCOL = "jdbc:ssh";
 
 	public static final SshTunnelDriver INSTANCE;
@@ -33,50 +49,57 @@ public class SshTunnelDriver implements Driver {
 		}
 	}
 
+	private LoadingCache<SSHInfo, SSHSession> sessions = CacheBuilder.newBuilder()
+			.build(new CacheLoader<SSHInfo, SSHSession>() {
+				public SSHSession load(SSHInfo key) throws JSchException {
+					return createSSHTunel(key);
+				}
+
+			});
+
 	private final static DriverPropertyInfo[] EMPTY_INFO = new DriverPropertyInfo[0];
 
 	public Connection connect(String url, Properties info) throws SQLException {
-		String strSshHost = "10.130.1.120"; // hostname or ip or SSH
-		String strSshUser = "xjodoin";
-		
-		int nSshPort = 22; // remote SSH host port number
-		String strRemoteHost = "10.130.3.221"; // hostname or ip
-//		jdbc:mysql://10.130.3.221:3306/api_cake								// of your
-																// database
-																// server
-		int nLocalPort = getRandomPort(); // local port number use to bind SSH tunnel
-		int nRemotePort = 3306; // remote port number of your database
-
-		
-		try {
-			SshTunnelDriver.doSshTunnel(strSshUser, strSshHost, nSshPort, strRemoteHost, nLocalPort,
-					nRemotePort);
-		} catch (JSchException e) {
-			throw new RuntimeException(e);
-		}
 
 		try {
-			Driver driver = (Driver) Class.forName("com.mysql.jdbc.Driver").newInstance();
-			return driver.connect("jdbc:mysql://localhost:" + nLocalPort+"/api_cake", info);
-		} catch (ClassNotFoundException | InstantiationException | IllegalAccessException e) {
-			throw new RuntimeException(e);
-		}
-		
-//		return DriverManager.getConnection("jdbc:mysql://localhost:" + nLocalPort+"/api_cake", strDbUser, strDbPassword);
-	}
+			SSHInfo ssHinfo = JDBCUtil.getSSHinfo(url, info);
+			SSHSession sshSession = sessions.get(ssHinfo);
+			Driver underlyingDriver = ssHinfo.getUnderlyingDriver();
+			URI originalUri = ssHinfo.getOriginalUri();
+			URI sshTunnelUrl = new URI(originalUri.getScheme(), originalUri.getUserInfo(), sshSession.getLocalHost(),
+					sshSession.getLocalPort(), originalUri.getPath(), originalUri.getQuery(),
+					originalUri.getFragment());
 
-	private static void doSshTunnel(String strSshUser, String strSshHost, int nSshPort, String strRemoteHost,
-			int nLocalPort, int nRemotePort) throws JSchException {
+			return underlyingDriver.connect("jdbc:" + sshTunnelUrl.toString(), info);
+
+		} catch (URISyntaxException | ExecutionException e) {
+			throw new SQLException(e);
+
+		}
+	};
+
+	private SSHSession createSSHTunel(SSHInfo key) throws JSchException {
+
 		final JSch jsch = new JSch();
-		jsch.addIdentity("/home/xjodoin/.ssh/id_rsa");
-		Session session = jsch.getSession(strSshUser, strSshHost, 22);
-		
+
+		SSHSession sshSession = new SSHSession(getRandomPort());
+
+		if (key.getPrivateKey() != null) {
+			jsch.addIdentity(key.getPrivateKey(), key.getPassphrase());
+		}
+
+		Session session = jsch.getSession(key.getSshUser(), key.getSshHost(), key.getSshPort());
+
 		final Properties config = new Properties();
 		config.put("StrictHostKeyChecking", "no");
 		session.setConfig(config);
 
 		session.connect();
-		session.setPortForwardingL(nLocalPort, strRemoteHost, nRemotePort);
+		session.setPortForwardingL(sshSession.getLocalPort(), key.getRemoteHost(), key.getRemotePort());
+
+		sshSession.setSession(session);
+
+		return sshSession;
 	}
 
 	public boolean acceptsURL(String url) throws SQLException {
@@ -87,8 +110,7 @@ public class SshTunnelDriver implements Driver {
 		try (ServerSocket server = new ServerSocket(0)) {
 			return server.getLocalPort();
 		} catch (IOException e) {
-			e.printStackTrace();
-			return 6667;
+			throw Throwables.propagate(e);
 		}
 	}
 
