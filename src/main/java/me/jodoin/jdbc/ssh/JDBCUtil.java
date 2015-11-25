@@ -57,6 +57,7 @@ public class JDBCUtil {
 		}
 
 		sshInfo.setSshHost(queryParams.get("sshHost"));
+		sshInfo.setSshPort(queryParams.get("sshPort") != null ? Integer.parseInt(queryParams.get("sshPort")) : 22);
 		sshInfo.setSshUser(
 				queryParams.get("sshUser") != null ? queryParams.get("sshUser") : System.getProperty("user.name"));
 
