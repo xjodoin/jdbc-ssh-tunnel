@@ -11,13 +11,10 @@ import java.sql.DriverPropertyInfo;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.util.Properties;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Logger;
 
-import com.google.common.base.Throwables;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
@@ -25,8 +22,8 @@ import com.jcraft.jsch.Session;
 public class SshTunnelDriver implements Driver {
 
 	/**
-	 * Key used to retreive the hostname value from the properties instance
-	 * passed to the driver.
+	 * Key used to retreive the hostname value from the properties instance passed
+	 * to the driver.
 	 */
 	public static final String HOST_PROPERTY_KEY = "HOST";
 
@@ -49,13 +46,7 @@ public class SshTunnelDriver implements Driver {
 		}
 	}
 
-	private LoadingCache<SSHInfo, SSHSession> sessions = CacheBuilder.newBuilder()
-			.build(new CacheLoader<SSHInfo, SSHSession>() {
-				public SSHSession load(SSHInfo key) throws JSchException {
-					return createSSHTunel(key);
-				}
-
-			});
+	private ConcurrentMap<SSHInfo, SSHSession> sessions = new ConcurrentHashMap<>();
 
 	private final static DriverPropertyInfo[] EMPTY_INFO = new DriverPropertyInfo[0];
 
@@ -63,7 +54,7 @@ public class SshTunnelDriver implements Driver {
 
 		try {
 			SSHInfo ssHinfo = JDBCUtil.getSSHinfo(url, info);
-			SSHSession sshSession = sessions.get(ssHinfo);
+			SSHSession sshSession = sessions.computeIfAbsent(ssHinfo, this::createSSHTunel);
 			Driver underlyingDriver = ssHinfo.getUnderlyingDriver();
 			URI originalUri = ssHinfo.getOriginalUri();
 			URI sshTunnelUrl = new URI(originalUri.getScheme(), originalUri.getUserInfo(), sshSession.getLocalHost(),
@@ -72,34 +63,38 @@ public class SshTunnelDriver implements Driver {
 
 			return underlyingDriver.connect("jdbc:" + sshTunnelUrl.toString(), info);
 
-		} catch (URISyntaxException | ExecutionException e) {
+		} catch (URISyntaxException e) {
 			throw new SQLException(e);
 
 		}
 	};
 
-	private SSHSession createSSHTunel(SSHInfo key) throws JSchException {
+	private SSHSession createSSHTunel(SSHInfo key) {
 
-		final JSch jsch = new JSch();
+		try {
+			final JSch jsch = new JSch();
 
-		SSHSession sshSession = new SSHSession(getRandomPort());
+			SSHSession sshSession = new SSHSession(getRandomPort());
 
-		if (key.getPrivateKey() != null) {
-			jsch.addIdentity(key.getPrivateKey(), key.getPassphrase());
+			if (key.getPrivateKey() != null) {
+				jsch.addIdentity(key.getPrivateKey(), key.getPassphrase());
+			}
+
+			Session session = jsch.getSession(key.getSshUser(), key.getSshHost(), key.getSshPort());
+
+			final Properties config = new Properties();
+			config.put("StrictHostKeyChecking", "no");
+			session.setConfig(config);
+
+			session.connect();
+			session.setPortForwardingL(sshSession.getLocalPort(), key.getRemoteHost(), key.getRemotePort());
+
+			sshSession.setSession(session);
+
+			return sshSession;
+		} catch (JSchException e) {
+			throw new RuntimeException("Can't etasblish ssh connection ", e);
 		}
-
-		Session session = jsch.getSession(key.getSshUser(), key.getSshHost(), key.getSshPort());
-
-		final Properties config = new Properties();
-		config.put("StrictHostKeyChecking", "no");
-		session.setConfig(config);
-
-		session.connect();
-		session.setPortForwardingL(sshSession.getLocalPort(), key.getRemoteHost(), key.getRemotePort());
-
-		sshSession.setSession(session);
-
-		return sshSession;
 	}
 
 	public boolean acceptsURL(String url) throws SQLException {
@@ -110,7 +105,7 @@ public class SshTunnelDriver implements Driver {
 		try (ServerSocket server = new ServerSocket(0)) {
 			return server.getLocalPort();
 		} catch (IOException e) {
-			throw Throwables.propagate(e);
+			throw new RuntimeException(e);
 		}
 	}
 

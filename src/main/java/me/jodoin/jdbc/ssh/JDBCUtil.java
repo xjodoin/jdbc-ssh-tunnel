@@ -9,9 +9,8 @@ import java.sql.SQLException;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
-
-import com.google.common.base.MoreObjects;
 
 public class JDBCUtil {
 
@@ -25,23 +24,23 @@ public class JDBCUtil {
 
 		DriverPropertyInfo[] propertyInfo = underlyingDriver.getPropertyInfo(originalJdbc, properties);
 
-		Integer port = null;
-		String host = null;
+		Optional<Integer> port = Optional.empty();
+		Optional<String> host = Optional.empty();
 
 		for (DriverPropertyInfo driverPropertyInfo : propertyInfo) {
 			switch (driverPropertyInfo.name) {
 			case "PORT":
-				port = Integer.parseInt(driverPropertyInfo.value);
+				port = Optional.ofNullable(driverPropertyInfo.value).map(Integer::parseInt);
 				break;
 			case "HOST":
-				host = driverPropertyInfo.value;
+				host = Optional.ofNullable(driverPropertyInfo.value);
 				break;
 			}
 		}
 
 		SSHInfo sshInfo = new SSHInfo(underlyingDriver, uri);
-		sshInfo.setRemoteHost(MoreObjects.firstNonNull(host, uri.getHost()));
-		sshInfo.setRemotePort(MoreObjects.firstNonNull(port, uri.getPort()));
+		sshInfo.setRemoteHost(host.orElse(uri.getHost()));
+		sshInfo.setRemotePort(port.orElse(uri.getPort()));
 
 		Map<String, String> queryParams = new HashMap<>();
 		// ssh infos
