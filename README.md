@@ -1,4 +1,4 @@
-# jdbc-ssh-tunnel
+# JDBC SSH tunnel
 
 [![Build Status](https://travis-ci.org/xjodoin/jdbc-ssh-tunnel.svg)](https://travis-ci.org/xjodoin/jdbc-ssh-tunnel)
 
