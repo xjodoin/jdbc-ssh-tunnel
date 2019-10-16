@@ -1,6 +1,7 @@
 # JDBC SSH tunnel
 
 [![Build Status](https://travis-ci.org/xjodoin/jdbc-ssh-tunnel.svg)](https://travis-ci.org/xjodoin/jdbc-ssh-tunnel)
+[![Maven Central](https://maven-badges.herokuapp.com/maven-central/org.torpedoquery/jdbc-ssh-tunnel/badge.svg)](https://maven-badges.herokuapp.com/maven-central/org.torpedoquery/jdbc-ssh-tunnel)
 
 Tunnel any jdbc driver connection over ssh
 
