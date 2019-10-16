@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.jodoin.jdbc.ssh;
+package org.torpedoquery.jdbc.ssh;
 
 import static org.junit.Assert.*;
 
@@ -23,6 +23,8 @@ import java.util.Properties;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.torpedoquery.jdbc.ssh.JDBCUtil;
+import org.torpedoquery.jdbc.ssh.SSHInfo;
 
 import com.mysql.jdbc.Driver;
 
