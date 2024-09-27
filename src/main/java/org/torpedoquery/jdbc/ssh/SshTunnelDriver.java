@@ -1,5 +1,5 @@
 /**
- * Copyright © 2018 Xavier Jodoin (xavier@jodoin.me)
+ * Copyright © 2024 Xavier Jodoin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -7,141 +7,192 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
  */
 package org.torpedoquery.jdbc.ssh;
-
-import java.io.IOException;
-import java.net.ServerSocket;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.sql.Connection;
-import java.sql.Driver;
-import java.sql.DriverManager;
-import java.sql.DriverPropertyInfo;
-import java.sql.SQLException;
-import java.sql.SQLFeatureNotSupportedException;
-import java.util.Properties;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.logging.Logger;
 
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
 
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.sql.*;
+import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.logging.Logger;
+
+/**
+ * The {@code SshTunnelDriver} class implements the JDBC {@link Driver} interface
+ * to provide SSH tunneling capabilities for JDBC connections.
+ */
 public class SshTunnelDriver implements Driver {
 
-	/**
-	 * Key used to retreive the hostname value from the properties instance passed
-	 * to the driver.
-	 */
-	public static final String HOST_PROPERTY_KEY = "HOST";
+    /**
+     * JDBC protocol prefix for SSH tunneling.
+     */
+    public static final String JDBC_PROTOCOL = "jdbc:ssh";
 
-	/**
-	 * Key used to retreive the port number value from the properties instance
-	 * passed to the driver.
-	 */
-	public static final String PORT_PROPERTY_KEY = "PORT";
+    /**
+     * Singleton instance of the driver.
+     */
+    public static final SshTunnelDriver INSTANCE;
 
-	public final static String JDBC_PROTOCOL = "jdbc:ssh";
+    static {
+        try {
+            INSTANCE = new SshTunnelDriver();
+            DriverManager.registerDriver(INSTANCE);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Unable to register SshTunnelDriver: " + e.getMessage(), e);
+        }
+    }
 
-	public static final SshTunnelDriver INSTANCE;
+    private final ConcurrentMap<SSHInfo, SSHSession> sessions = new ConcurrentHashMap<>();
+    private static final DriverPropertyInfo[] EMPTY_INFO = new DriverPropertyInfo[0];
 
-	static {
-		try {
-			DriverManager.registerDriver(INSTANCE = new SshTunnelDriver());
-		} catch (SQLException e) {
-			throw new IllegalStateException(
-					"Unable to register " + SshTunnelDriver.class.getName() + ": " + e.getMessage());
-		}
-	}
+    /**
+     * Establishes a connection to the database through an SSH tunnel.
+     *
+     * @param url  the database URL
+     * @param info a list of arbitrary string tag/value pairs as connection arguments
+     * @return a {@link Connection} object that represents a connection to the URL
+     * @throws SQLException if a database access error occurs
+     */
+    @Override
+    public Connection connect(String url, Properties info) throws SQLException {
+        if (!acceptsURL(url)) {
+            return null;
+        }
 
-	private ConcurrentMap<SSHInfo, SSHSession> sessions = new ConcurrentHashMap<>();
+        try {
+            SSHInfo sshInfo = JDBCUtil.getSSHinfo(url, info);
+            SSHSession sshSession = sessions.computeIfAbsent(sshInfo, this::createSSHTunnel);
+            Driver underlyingDriver = sshInfo.getUnderlyingDriver();
+            URI originalUri = sshInfo.getOriginalUri();
 
-	private final static DriverPropertyInfo[] EMPTY_INFO = new DriverPropertyInfo[0];
+            URI sshTunnelUri = new URI(
+                    originalUri.getScheme(),
+                    originalUri.getUserInfo(),
+                    sshSession.getLocalHost(),
+                    sshSession.getLocalPort(),
+                    originalUri.getPath(),
+                    originalUri.getQuery(),
+                    originalUri.getFragment()
+            );
 
-	public Connection connect(String url, Properties info) throws SQLException {
+            return underlyingDriver.connect("jdbc:" + sshTunnelUri.toString(), info);
+        } catch (URISyntaxException e) {
+            throw new SQLException("Invalid URI syntax: " + e.getMessage(), e);
+        }
+    }
 
-		try {
-			SSHInfo ssHinfo = JDBCUtil.getSSHinfo(url, info);
-			SSHSession sshSession = sessions.computeIfAbsent(ssHinfo, this::createSSHTunel);
-			Driver underlyingDriver = ssHinfo.getUnderlyingDriver();
-			URI originalUri = ssHinfo.getOriginalUri();
-			URI sshTunnelUrl = new URI(originalUri.getScheme(), originalUri.getUserInfo(), sshSession.getLocalHost(),
-					sshSession.getLocalPort(), originalUri.getPath(), originalUri.getQuery(),
-					originalUri.getFragment());
+    /**
+     * Checks if the driver can handle the given URL.
+     *
+     * @param url the URL of the database
+     * @return {@code true} if the driver can handle the URL; {@code false} otherwise
+     * @throws SQLException if a database access error occurs
+     */
+    @Override
+    public boolean acceptsURL(String url) throws SQLException {
+        return url.startsWith(JDBC_PROTOCOL);
+    }
 
-			return underlyingDriver.connect("jdbc:" + sshTunnelUrl.toString(), info);
+    /**
+     * Retrieves the driver's major version number.
+     *
+     * @return the driver's major version number
+     */
+    @Override
+    public int getMajorVersion() {
+        return 1;
+    }
 
-		} catch (URISyntaxException e) {
-			throw new SQLException(e);
+    /**
+     * Retrieves the driver's minor version number.
+     *
+     * @return the driver's minor version number
+     */
+    @Override
+    public int getMinorVersion() {
+        return 0;
+    }
 
-		}
-	};
+    /**
+     * Reports whether this driver is a genuine JDBC Compliant driver.
+     *
+     * @return {@code false}, as this driver is not fully JDBC compliant
+     */
+    @Override
+    public boolean jdbcCompliant() {
+        return false;
+    }
 
-	private SSHSession createSSHTunel(SSHInfo key) {
+    /**
+     * Gets the parent logger for this driver.
+     *
+     * @return the parent logger
+     * @throws SQLFeatureNotSupportedException if the driver does not use {@code java.util.logging}
+     */
+    @Override
+    public Logger getParentLogger() throws SQLFeatureNotSupportedException {
+        throw new SQLFeatureNotSupportedException("Logging is not supported.");
+    }
 
-		try {
-			final JSch jsch = new JSch();
+    /**
+     * Returns an array of {@link DriverPropertyInfo} objects describing possible properties.
+     *
+     * @param url  the URL of the database to which to connect
+     * @param info a proposed list of tag/value pairs that will be sent on connect open
+     * @return an array of {@link DriverPropertyInfo} objects
+     * @throws SQLException if a database access error occurs
+     */
+    @Override
+    public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException {
+        return EMPTY_INFO;
+    }
 
-			SSHSession sshSession = new SSHSession(getRandomPort());
+    /**
+     * Creates an SSH tunnel based on the provided {@link SSHInfo}.
+     *
+     * @param sshInfo the SSH information
+     * @return an {@link SSHSession} representing the SSH tunnel
+     */
+    private SSHSession createSSHTunnel(SSHInfo sshInfo) {
+        try {
+            JSch jsch = new JSch();
+            SSHSession sshSession = new SSHSession(getRandomPort());
 
-			if (key.getPrivateKey() != null) {
-				jsch.addIdentity(key.getPrivateKey(), key.getPassphrase());
-			}
+            if (sshInfo.getPrivateKey() != null) {
+                jsch.addIdentity(sshInfo.getPrivateKey(), sshInfo.getPassphrase());
+            }
 
-			Session session = jsch.getSession(key.getSshUser(), key.getSshHost(), key.getSshPort());
+            Session session = jsch.getSession(sshInfo.getSshUser(), sshInfo.getSshHost(), sshInfo.getSshPort());
+            session.setConfig("StrictHostKeyChecking", "no");
 
-			final Properties config = new Properties();
-			config.put("StrictHostKeyChecking", "no");
-			session.setConfig(config);
+            session.connect();
+            session.setPortForwardingL(sshSession.getLocalPort(), sshInfo.getRemoteHost(), sshInfo.getRemotePort());
+            sshSession.setSession(session);
 
-			session.connect();
-			session.setPortForwardingL(sshSession.getLocalPort(), key.getRemoteHost(), key.getRemotePort());
+            return sshSession;
+        } catch (JSchException e) {
+            throw new RuntimeException("Cannot establish SSH connection: " + e.getMessage(), e);
+        }
+    }
 
-			sshSession.setSession(session);
-
-			return sshSession;
-		} catch (JSchException e) {
-			throw new RuntimeException("Can't etasblish ssh connection ", e);
-		}
-	}
-
-	public boolean acceptsURL(String url) throws SQLException {
-		return url.startsWith(JDBC_PROTOCOL);
-	}
-
-	private static int getRandomPort() {
-		try (ServerSocket server = new ServerSocket(0)) {
-			return server.getLocalPort();
-		} catch (IOException e) {
-			throw new RuntimeException(e);
-		}
-	}
-
-	public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException {
-		return EMPTY_INFO;
-	}
-
-	public int getMajorVersion() {
-		return 4;
-	}
-
-	public int getMinorVersion() {
-		return 4;
-	}
-
-	public boolean jdbcCompliant() {
-		return false;
-	}
-
-	public Logger getParentLogger() throws SQLFeatureNotSupportedException {
-		return null;
-	}
-
+    /**
+     * Obtains a random available port on the local machine.
+     *
+     * @return a random available port number
+     */
+    private static int getRandomPort() {
+        try (ServerSocket server = new ServerSocket(0)) {
+            return server.getLocalPort();
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to find an available port: " + e.getMessage(), e);
+        }
+    }
 }
